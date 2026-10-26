@@ -61,7 +61,11 @@ function setLoading(button, loading, label) {
 }
 
 function renderTable(table, columns, rows, { cellClass, rowClass, format } = {}) {
-  const head = `<thead><tr>${columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
+  // Right-align a header when its first data cell is numeric, so headers line up with values.
+  const first = rows[0] || {};
+  const headClass = (c) => ((cellClass ? cellClass(c, first[c], first) : (typeof first[c] === "number" ? "num" : "")) || "")
+    .split(" ").includes("num") ? "num" : "";
+  const head = `<thead><tr>${columns.map((c) => `<th class="${headClass(c)}">${escapeHtml(c)}</th>`).join("")}</tr></thead>`;
   const body = rows.map((row, i) => {
     const cells = columns.map((c) => {
       const value = format ? format(c, row[c], row) : fmtCell(row[c]);
@@ -451,6 +455,7 @@ function initEvaluation() {
     .catch((err) => showError(errorBox, err.message));
 
   initSensitivity();
+  initExperiments();
 }
 
 function renderPerformance(ev) {
@@ -564,16 +569,191 @@ function renderErrors(ev) {
   $("#err-median").textContent = `${(e.median_absolute_error * 100).toFixed(1)} pts`;
   $("#err-bias").textContent = `${signed(e.mean_signed_error * 100, 1)} pts`;
   $("#err-max").textContent = `${(e.max_absolute_error * 100).toFixed(1)} pts`;
+  $("#err-over5").textContent = e.over_5_points;
+  $("#err-over10").textContent = e.over_10_points;
   makeChart("eval-scatter", scatterConfig(ev.scatter.actual, ev.scatter.predicted));
-  const features = ev.model.features;
-  const short = { "GRE Score": "GRE", "TOEFL Score": "TOEFL", "University Rating": "Univ", "Research": "Res" };
-  const cols = ["Row", ...features.map((f) => short[f] || f), "Actual", "Predicted", "Error"];
-  const rows = e.top10.map((r) => {
-    const out = { Row: r.row, Actual: pct(r.actual), Predicted: pct(r.predicted), Error: `${signed(r.error * 100, 1)} pts` };
-    features.forEach((f) => { out[short[f] || f] = r[f]; });
-    return out;
+
+  const select = $("#errors-limit");
+  select.options[1].textContent = `All ${e.ranked.length} test students`;
+  const draw = () => {
+    const rows = select.value === "all" ? e.ranked : e.ranked.slice(0, 10);
+    renderTable($("#errors-table"), ["Student", "Actual", "Predicted", "Absolute Error"], rows.map((r) => ({
+      Student: `#${r.student}`, Actual: num(r.actual, 2), Predicted: num(r.predicted, 2), "Absolute Error": num(r.abs_error, 3),
+    })), { cellClass: (c) => (c === "Student" ? "" : "num") });
+  };
+  select.onchange = draw;
+  draw();
+}
+
+/* ---------------------------------------------------------------- Evaluation experiments */
+
+const pts = (v, digits = 1) => `${(v * 100).toFixed(digits)} pts`;
+
+/* Wire a "Run" button to an API call; results are only computed when the user asks. */
+function runExperiment(buttonId, url, errorId, resultId, render) {
+  const button = $(`#${buttonId}`);
+  if (!button) return;
+  button.addEventListener("click", async () => {
+    showError($(`#${errorId}`), null);
+    setLoading(button, true, "Running…");
+    try {
+      render(await api(url));
+      show($(`#${resultId}`));
+    } catch (err) {
+      showError($(`#${errorId}`), err.message);
+    } finally {
+      setLoading(button, false);
+    }
   });
-  renderTable($("#errors-table"), cols, rows);
+}
+
+function renderSubjective(r) {
+  const a = r.models.all;
+  const b = r.models.academic;
+  $("#subj-mean").textContent = pts(r.mean_abs_change);
+  $("#subj-over5").textContent = `${r.over_5_points} of ${r.n_test}`;
+  $("#subj-max").textContent = pts(r.max_abs_change);
+  $("#subj-table").innerHTML = `
+    <thead><tr><th>Test metric</th><th class="num">Model A<br><span class="muted small">all 7 features</span></th>
+      <th class="num">Model B<br><span class="muted small">academic only</span></th></tr></thead>
+    <tbody>
+      <tr><td>MAE</td><td class="num">${num(a.mae, 4)}</td><td class="num">${num(b.mae, 4)}</td></tr>
+      <tr><td>R²</td><td class="num">${num(a.r2, 3)}</td><td class="num">${num(b.r2, 3)}</td></tr>
+      <tr><td>RMSE</td><td class="num">${num(a.rmse, 4)}</td><td class="num">${num(b.rmse, 4)}</td></tr>
+    </tbody>`;
+  renderTable($("#subj-changes"), ["Student", "Actual", "Model A", "Model B", "Change"], r.largest_changes.map((c) => ({
+    Student: `#${c.student}`, Actual: pct(c.actual), "Model A": pct(c.all_features), "Model B": pct(c.academic_only),
+    Change: `${signed(c.change * 100, 1)} pts`,
+  })), { cellClass: (c) => (c === "Student" ? "" : "num") });
+  const cfg = r.config;
+  $("#subj-note").textContent = `Both models: K = ${cfg.k}, ${cfg.metric} distance, ${cfg.weights} weights, `
+    + `${r.n_train} training / ${r.n_test} test students, each with its own StandardScaler fitted on the training rows. `
+    + (r.matches_active_model ? "Model A reproduces the active model's predictions exactly." : "");
+}
+
+function renderConsistency(r) {
+  const t = r.totals;
+  $("#cons-tests").textContent = t.tests;
+  $("#cons-dec").textContent = t.decreases;
+  $("#cons-dec2").textContent = t.decreases_over_2;
+  $("#cons-dec5").textContent = t.decreases_over_5;
+  $("#cons-max").textContent = pts(t.largest_decrease);
+  $("#cons-students").textContent = `${t.unique_students} of ${r.n_test}`;
+  $("#cons-summary").innerHTML = `Academic improvements (GRE, TOEFL, CGPA, Research) lowered the prediction in `
+    + `<strong>${t.academic_decreases}</strong> test(s), affecting <strong>${t.academic_unique_students}</strong> unique student(s). `
+    + `<span class="muted">Counts are feature-change events; one student can appear in several.</span>`;
+  renderTable($("#cons-features"), ["Feature", "Change", "Tests", "Unexpected Decreases", "Largest Decrease"],
+    r.features.map((f) => ({
+      Feature: f.feature, Change: f.step, Tests: f.tests, "Unexpected Decreases": f.decreases,
+      "Largest Decrease": f.decreases ? pts(f.largest_decrease) : "—",
+    })),
+    { cellClass: (c) => (["Tests", "Unexpected Decreases", "Largest Decrease"].includes(c) ? "num" : ""),
+      rowClass: (row) => (APP.academic.includes(row.Feature) && row["Unexpected Decreases"] > 0 ? "flag" : "") });
+  const scope = $("#cons-examples-scope");
+  const drawExamples = () => {
+    const examples = scope.value === "academic" ? r.academic_examples : r.examples;
+    show($("#cons-examples-empty"), !examples.length);
+    renderTable($("#cons-examples"), ["Student", "Feature", "Original Value", "Improved Value", "Original Prediction", "Modified Prediction", "Change"],
+      examples.map((e) => ({
+        Student: `#${e.student}`, Feature: e.feature, "Original Value": e.original_value, "Improved Value": e.improved_value,
+        "Original Prediction": pct(e.original_prediction), "Modified Prediction": pct(e.modified_prediction),
+        Change: `${signed(e.change * 100, 1)} pts`,
+      })),
+      { cellClass: (c) => (["Student", "Feature"].includes(c) ? "" : "num"),
+        rowClass: (row, i) => (examples[i].group === "academic" ? "flag" : "") });
+  };
+  scope.onchange = drawExamples;
+  drawExamples();
+}
+
+function renderAtypical(r) {
+  const fmtP = (p) => (p < 0.001 ? "< 0.001" : num(p, 3));
+  $("#atyp-table").innerHTML = `
+    <thead><tr><th>Group</th><th class="num">Students</th><th class="num">Avg distance</th><th class="num">Avg abs error</th></tr></thead>
+    <tbody>
+      <tr><td>Typical (80%)</td><td class="num">${r.typical.count}</td><td class="num">${num(r.typical.mean_distance, 2)}</td><td class="num">${pts(r.typical.mean_abs_error)}</td></tr>
+      <tr><td>Atypical (20%)</td><td class="num">${r.atypical.count}</td><td class="num">${num(r.atypical.mean_distance, 2)}</td><td class="num">${pts(r.atypical.mean_abs_error)}</td></tr>
+    </tbody>`;
+  let text = r.error_ratio !== null
+    ? `Error ratio (atypical ÷ typical): <strong>${num(r.error_ratio, 2)}×</strong>. `
+    : "";
+  text += r.spearman_rho !== null
+    ? `Spearman correlation between neighbour distance and absolute error: <strong>ρ = ${num(r.spearman_rho, 3)}</strong> (p ${r.spearman_p < 0.001 ? "" : "= "}${fmtP(r.spearman_p)}).`
+    : "Spearman correlation is not available for this data (too few students or constant values).";
+  $("#atyp-summary").innerHTML = text;
+
+  const point = (s) => ({ x: s.avg_distance, y: s.abs_error, student: s.student });
+  makeChart("atyp-chart", {
+    type: "scatter",
+    data: {
+      datasets: [
+        { label: "Typical", data: r.students.filter((s) => s.group === "typical").map(point), backgroundColor: "rgba(31, 99, 214, 0.55)", pointRadius: 3 },
+        { label: "Atypical", data: r.students.filter((s) => s.group === "atypical").map(point), backgroundColor: COLORS.reviewer, pointRadius: 4 },
+      ],
+    },
+    options: {
+      scales: {
+        x: { title: { display: true, text: `Avg distance to ${r.k} nearest training students` } },
+        y: { title: { display: true, text: "Absolute error" }, ticks: { callback: (v) => pct(v, 0) } },
+      },
+      plugins: { tooltip: { callbacks: { label: (c) => `#${c.raw.student}: distance ${num(c.parsed.x, 2)}, error ${pts(c.parsed.y)}` } } },
+    },
+  });
+
+  const select = $("#nn-student");
+  select.innerHTML = `<option value="" selected disabled>Choose a student (most atypical first)</option>` + r.students.map((s) =>
+    `<option value="${s.student}">#${s.student} — ${s.group}, distance ${num(s.avg_distance, 2)}, error ${pts(s.abs_error)}</option>`).join("");
+}
+
+async function loadNeighbors(studentId) {
+  showError($("#nn-error"), null);
+  try {
+    const r = await api(`/api/experiments/neighbors/${encodeURIComponent(studentId)}`);
+    const short = { "GRE Score": "GRE", "TOEFL Score": "TOEFL", "University Rating": "Univ", "Research": "Res" };
+    const features = Object.keys(r.features);
+    const cols = ["Student", ...features.map((f) => short[f] || f), "Distance", "Chance of Admit"];
+    const studentRow = { Student: `#${r.student} (test)`, Distance: "—", "Chance of Admit": `${pct(r.actual)} actual` };
+    features.forEach((f) => { studentRow[short[f] || f] = r.features[f]; });
+    const rows = [studentRow, ...r.neighbors.map((n) => {
+      const row = { Student: `#${n.student}`, Distance: num(n.distance, 3), "Chance of Admit": pct(n.chance_of_admit) };
+      features.forEach((f) => { row[short[f] || f] = n[f]; });
+      return row;
+    })];
+    renderTable($("#nn-table"), cols, rows, { rowClass: (row, i) => (i === 0 ? "selected" : "") });
+    $("#nn-summary").innerHTML = `Student #${r.student}: actual <strong>${pct(r.actual)}</strong>, predicted `
+      + `<strong>${pct(r.predicted)}</strong> (${r.weights} average of the ${r.k} training students below). `
+      + `Average neighbour distance: <strong>${num(r.avg_distance, 3)}</strong>.`;
+    show($("#nn-result"));
+  } catch (err) {
+    showError($("#nn-error"), err.message);
+  }
+}
+
+function initExperiments() {
+  runExperiment("subj-run", "/api/experiments/subjective", "subj-error", "subj-result", renderSubjective);
+  runExperiment("cons-run", "/api/experiments/consistency", "cons-error", "cons-result", renderConsistency);
+  runExperiment("atyp-run", "/api/experiments/atypical", "atyp-error", "atyp-result", renderAtypical);
+  const nn = $("#nn-student");
+  if (nn) nn.addEventListener("change", () => nn.value && loadNeighbors(nn.value));
+
+  const cutoffForm = $("#cutoff-form");
+  if (cutoffForm) {
+    cutoffForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const value = Number($("#cutoff").value);
+      const out = $("#cutoff-result");
+      if (!(value > 0 && value < 100)) { out.textContent = "Enter a cutoff between 1 and 99."; return; }
+      try {
+        const r = await api(`/api/experiments/cutoff?cutoff=${value / 100}`);
+        out.innerHTML = `At a ${value}% cutoff, <strong>${r.disagreements}</strong> of ${r.n_test} test students fall on opposite sides: `
+          + `${r.recorded_above_predicted_below} recorded at or above but predicted below, `
+          + `${r.recorded_below_predicted_above} recorded below but predicted at or above. `
+          + `<span class="muted">(Recorded ≥ cutoff: ${r.actual_above}; predicted ≥ cutoff: ${r.predicted_above}.)</span>`;
+      } catch (err) {
+        out.textContent = err.message;
+      }
+    });
+  }
 }
 
 function initSensitivity() {

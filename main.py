@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import Path as Path_
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -279,3 +280,33 @@ def k_analysis():
 def sensitivity(req: SensitivityRequest):
     """Change one feature of a student profile and compare the two predictions."""
     return ml.sensitivity(req.profile.to_features(), req.feature, req.new_value)
+
+
+@app.get("/api/experiments/subjective", tags=["experiments"])
+def subjective_comparison():
+    """Q2: all seven features vs academic features only, two separately trained models on the same rows."""
+    return ml.subjective_comparison()
+
+
+@app.get("/api/experiments/consistency", tags=["experiments"])
+def consistency_test():
+    """Q3: improve each feature of every test student with the active model and count prediction drops."""
+    return ml.consistency_test()
+
+
+@app.get("/api/experiments/atypical", tags=["experiments"])
+def atypical_analysis():
+    """Q4: typical vs atypical test students by average distance to their K nearest training students."""
+    return ml.atypical_analysis()
+
+
+@app.get("/api/experiments/neighbors/{student_id}", tags=["experiments"])
+def nearest_neighbors(student_id: int = Path_(..., ge=1)):
+    """The K nearest training students used to predict one held-out test student."""
+    return ml.nearest_neighbors(student_id)
+
+
+@app.get("/api/experiments/cutoff", tags=["experiments"])
+def cutoff_comparison(cutoff: float = Query(0.7, gt=0, lt=1)):
+    """Test students whose recorded and predicted scores fall on opposite sides of a hypothetical cutoff."""
+    return ml.cutoff_comparison(cutoff)

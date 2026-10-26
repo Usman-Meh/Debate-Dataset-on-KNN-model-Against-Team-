@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>Model Evaluation</h1>
-  <p class="muted">Does the trained KNN model generalize, which features drive it, and does it behave consistently?</p>
+  <p class="muted">Does the trained KNN model generalize, which features drive it, and does it behave consistently? Every experiment uses the active model and its held-out test students.</p>
 </div>
 
 {% if not model %}
@@ -32,7 +32,47 @@
 </section>
 
 <section class="card">
-  <h2>B. Feature importance</h2>
+  <h2>B. Test prediction errors <span class="qtag">Q1</span></h2>
+  <div class="stats-row">
+    <div class="stat"><span class="stat-label">Average absolute error</span><span class="stat-value" id="err-mae"></span></div>
+    <div class="stat"><span class="stat-label">Median absolute error</span><span class="stat-value" id="err-median"></span></div>
+    <div class="stat"><span class="stat-label">Average bias</span><span class="stat-value" id="err-bias"></span></div>
+    <div class="stat"><span class="stat-label">Largest error</span><span class="stat-value" id="err-max"></span></div>
+    <div class="stat"><span class="stat-label">Errors &gt; 5 pts</span><span class="stat-value" id="err-over5"></span></div>
+    <div class="stat"><span class="stat-label">Errors &gt; 10 pts</span><span class="stat-value" id="err-over10"></span></div>
+  </div>
+  <div class="two-col">
+    <div>
+      <h3>Actual vs Predicted (held-out test set)</h3>
+      <div class="chart-box"><canvas id="eval-scatter"></canvas></div>
+      <p class="muted small">Points on the dashed line are perfect predictions. Bias &gt; 0 means the model over-estimates on average.</p>
+    </div>
+    <div>
+      <div class="table-head">
+        <h3>Test students by error</h3>
+        <select id="errors-limit" aria-label="Rows to show">
+          <option value="10" selected>10 largest errors</option>
+          <option value="all">All test students</option>
+        </select>
+      </div>
+      <div class="table-wrap tall"><table class="table compact" id="errors-table"></table></div>
+      <p class="muted small">Student = row number in the training dataset (equals Serial No. for the original CSV).</p>
+    </div>
+  </div>
+  <details class="sub">
+    <summary>Hypothetical admission cutoff</summary>
+    <form id="cutoff-form" class="inline-run">
+      <label for="cutoff">Cutoff (%)</label>
+      <input type="number" id="cutoff" value="70" min="1" max="99" step="1">
+      <button type="submit" class="btn">Compare</button>
+    </form>
+    <p id="cutoff-result"></p>
+    <p class="note">The dataset contains Chance of Admit scores, not confirmed admission decisions. Students on opposite sides of a hypothetical cutoff are score disagreements, not verified admissions errors.</p>
+  </details>
+</section>
+
+<section class="card">
+  <h2>C. Feature importance <span class="qtag">Q2</span></h2>
   <div class="two-col wide-left">
     <div><div class="chart-box"><canvas id="importance-chart"></canvas></div></div>
     <div class="explain">
@@ -46,24 +86,29 @@
 </section>
 
 <section class="card">
-  <h2>C. K value comparison</h2>
-  <div class="two-col wide-left">
-    <div><div class="chart-box"><canvas id="k-chart"></canvas></div></div>
-    <div class="explain">
-      <p>Each K was scored with <strong id="k-folds"></strong>-fold cross-validation on the <strong>training data only</strong>. The test set is never used to choose K.</p>
-      <div class="stats-row">
-        <div class="stat"><span class="stat-label">Current K</span><span class="stat-value" id="k-current"></span></div>
-        <div class="stat"><span class="stat-label">Recommended K</span><span class="stat-value ok-text" id="k-best"></span></div>
-      </div>
-      <p id="k-summary"></p>
-      <button class="btn primary" id="retrain-btn" hidden></button>
-      <p class="muted small" id="retrain-status"></p>
+  <h2>D. Subjective feature comparison <span class="qtag">Q2</span></h2>
+  <p class="muted">Trains two <strong>separate</strong> KNN models with the active model's settings on the <strong>same training rows</strong> and scores them on the <strong>same test students</strong>: Model A uses all seven features, Model B only the academic ones (GRE, TOEFL, CGPA, Research). The active model is not changed.</p>
+  <button class="btn primary" id="subj-run">Run comparison</button>
+  <div id="subj-error" class="alert error" hidden></div>
+  <div id="subj-result" hidden>
+    <div class="stats-row">
+      <div class="stat"><span class="stat-label">Average prediction change</span><span class="stat-value" id="subj-mean"></span></div>
+      <div class="stat"><span class="stat-label">Students changed &gt; 5 pts</span><span class="stat-value" id="subj-over5"></span></div>
+      <div class="stat"><span class="stat-label">Largest change</span><span class="stat-value" id="subj-max"></span></div>
     </div>
+    <div class="two-col">
+      <div class="table-wrap"><table class="table" id="subj-table"></table></div>
+      <div>
+        <div class="table-wrap"><table class="table compact" id="subj-changes"></table></div>
+        <p class="muted small">Five test students whose prediction moves most when SOP, LOR and University Rating are removed (change = Model B − Model A).</p>
+      </div>
+    </div>
+    <p class="muted small" id="subj-note"></p>
   </div>
 </section>
 
 <section class="card">
-  <h2>D. Prediction consistency</h2>
+  <h2>E. Prediction consistency <span class="qtag">Q3</span></h2>
   <p class="muted">Change one feature while keeping everything else fixed. A consistent model should not lower a student's chance when an academic qualification improves.</p>
   <form id="sens-form" class="form-grid" novalidate>
     {% for f in features %}
@@ -114,22 +159,76 @@
 </section>
 
 <section class="card">
-  <h2>E. Prediction errors</h2>
-  <div class="stats-row">
-    <div class="stat"><span class="stat-label">Average absolute error</span><span class="stat-value" id="err-mae"></span></div>
-    <div class="stat"><span class="stat-label">Median absolute error</span><span class="stat-value" id="err-median"></span></div>
-    <div class="stat"><span class="stat-label">Average bias</span><span class="stat-value" id="err-bias"></span></div>
-    <div class="stat"><span class="stat-label">Largest error</span><span class="stat-value" id="err-max"></span></div>
-  </div>
-  <div class="two-col">
-    <div>
-      <h3>Actual vs Predicted (held-out test set)</h3>
-      <div class="chart-box"><canvas id="eval-scatter"></canvas></div>
-      <p class="muted small">Points on the dashed line are perfect predictions. Bias &gt; 0 means the model over-estimates on average.</p>
+  <h2>F. Automatic consistency test <span class="qtag">Q3</span></h2>
+  <p class="muted">For every held-out test student, the active model re-predicts after improving one feature at a time (GRE +1, TOEFL +1, CGPA +0.05, SOP +0.5, LOR +0.5, University Rating +1, Research 0 → 1), all else unchanged. Students already at a feature's maximum are skipped. Nothing is retrained.</p>
+  <button class="btn primary" id="cons-run">Run test</button>
+  <div id="cons-error" class="alert error" hidden></div>
+  <div id="cons-result" hidden>
+    <div class="stats-row">
+      <div class="stat"><span class="stat-label">Improvement tests</span><span class="stat-value" id="cons-tests"></span></div>
+      <div class="stat"><span class="stat-label">Predictions decreased</span><span class="stat-value" id="cons-dec"></span></div>
+      <div class="stat"><span class="stat-label">Decreases &gt; 2 pts</span><span class="stat-value" id="cons-dec2"></span></div>
+      <div class="stat"><span class="stat-label">Decreases &gt; 5 pts</span><span class="stat-value" id="cons-dec5"></span></div>
+      <div class="stat"><span class="stat-label">Largest decrease</span><span class="stat-value" id="cons-max"></span></div>
+      <div class="stat"><span class="stat-label">Unique students affected</span><span class="stat-value" id="cons-students"></span></div>
     </div>
-    <div>
-      <h3>Top 10 largest errors</h3>
-      <div class="table-wrap"><table class="table compact" id="errors-table"></table></div>
+    <p id="cons-summary"></p>
+    <div class="table-wrap"><table class="table compact" id="cons-features"></table></div>
+    <div class="table-head">
+      <h3>Five largest individual decreases</h3>
+      <select id="cons-examples-scope" aria-label="Which features">
+        <option value="academic" selected>Academic features only</option>
+        <option value="all">All features</option>
+      </select>
+    </div>
+    <div class="table-wrap"><table class="table compact" id="cons-examples"></table></div>
+    <p class="muted small" id="cons-examples-empty" hidden>No decreases found for these features.</p>
+    <p class="note">A decrease shows that KNN's prediction is not monotonic: the improved profile picks different neighbours. It is evidence about consistency, not by itself proof that the model is unfair or inaccurate.</p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>G. Atypical student analysis <span class="qtag">Q4</span></h2>
+  <p class="muted">Each test student's average distance to their K nearest training students (in the saved model's standardized feature space). The 20% with the largest distances are <strong>atypical</strong>; the other 80% are <strong>typical</strong>.</p>
+  <button class="btn primary" id="atyp-run">Run analysis</button>
+  <div id="atyp-error" class="alert error" hidden></div>
+  <div id="atyp-result" hidden>
+    <div class="two-col">
+      <div>
+        <div class="table-wrap"><table class="table" id="atyp-table"></table></div>
+        <p id="atyp-summary"></p>
+      </div>
+      <div class="chart-box short"><canvas id="atyp-chart"></canvas></div>
+    </div>
+    <details class="sub" id="nn-details">
+      <summary>Inspect a student's nearest neighbours</summary>
+      <div class="inline-run">
+        <label for="nn-student">Test student</label>
+        <select id="nn-student"></select>
+      </div>
+      <div id="nn-error" class="alert error" hidden></div>
+      <div id="nn-result" hidden>
+        <p id="nn-summary"></p>
+        <div class="table-wrap tall"><table class="table compact" id="nn-table"></table></div>
+      </div>
+    </details>
+    <p class="note">Nearest-neighbour distance is not a calibrated confidence probability. It only shows how far the closest training students are; the model still returns a prediction of the same form however far away they are.</p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>H. K value comparison</h2>
+  <div class="two-col wide-left">
+    <div><div class="chart-box"><canvas id="k-chart"></canvas></div></div>
+    <div class="explain">
+      <p>Each K was scored with <strong id="k-folds"></strong>-fold cross-validation on the <strong>training data only</strong>. The test set is never used to choose K.</p>
+      <div class="stats-row">
+        <div class="stat"><span class="stat-label">Current K</span><span class="stat-value" id="k-current"></span></div>
+        <div class="stat"><span class="stat-label">Recommended K</span><span class="stat-value ok-text" id="k-best"></span></div>
+      </div>
+      <p id="k-summary"></p>
+      <button class="btn primary" id="retrain-btn" hidden></button>
+      <p class="muted small" id="retrain-status"></p>
     </div>
   </div>
 </section>

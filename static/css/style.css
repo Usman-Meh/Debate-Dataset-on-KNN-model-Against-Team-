@@ -21,6 +21,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -187,6 +188,24 @@ input[type=range] { width: 100%; accent-color: var(--primary); }
 .swatch.reviewer { background: var(--reviewer); }
 .delta-up { color: var(--ok); font-weight: 700; }
 .delta-down { color: var(--error); font-weight: 700; }
+
+/* ---------- evaluation experiments ---------- */
+.qtag {
+  font-size: .72rem; font-weight: 700; color: var(--primary); background: var(--primary-soft);
+  padding: .1rem .45rem; border-radius: 99px; vertical-align: middle; margin-left: .3rem;
+}
+.table-head { display: flex; align-items: center; justify-content: space-between; gap: .7rem; flex-wrap: wrap; margin-top: 1.2rem; }
+.table-head h3 { margin: 0; }
+.table-head select { width: auto; }
+.table tr.flag td { background: var(--warn-soft); }
+.table tr.selected td { background: var(--primary-soft); font-weight: 600; }
+details.sub { margin-top: 1rem; border: 1px solid var(--border); border-radius: 8px; padding: .6rem .9rem; }
+details.sub summary { cursor: pointer; font-weight: 600; color: var(--navy); }
+details.sub[open] summary { margin-bottom: .6rem; }
+.inline-run { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin: .4rem 0 .8rem; }
+.inline-run label { font-weight: 600; font-size: .88rem; color: var(--navy); }
+.inline-run input { width: 90px; }
+.inline-run select { width: auto; max-width: 100%; }
 
 /* ---------- responsive ---------- */
 @media (max-width: 860px) {

@@ -13,6 +13,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
+from scipy.stats import spearmanr
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import KFold, cross_validate, train_test_split
@@ -269,6 +270,7 @@ def train_model(df: pd.DataFrame, *, k: int = 5, test_percent: float = 30, metri
     }
     evaluation = {
         "train_index": [int(i) for i in X_train.index],
+        "test_index": [int(i) for i in X_test.index],
         "train_actual": [float(v) for v in y_train],
         "train_predicted": [float(v) for v in train_pred],
         "test_rows": test_rows.to_dict("records"),
@@ -473,7 +475,12 @@ def get_evaluation() -> dict:
             "mean_signed_error": float(errors.mean()),
             "median_absolute_error": float(np.median(np.abs(errors))),
             "max_absolute_error": float(np.abs(errors).max()),
+            "over_5_points": int(np.sum(np.abs(errors) > 0.05 + 1e-9)),
+            "over_10_points": int(np.sum(np.abs(errors) > 0.10 + 1e-9)),
             "top10": top,
+            "ranked": [{"student": int(r["row"]), "actual": r["actual"], "predicted": r["predicted"],
+                        "abs_error": abs(r["error"])}
+                       for r in sorted(rows, key=lambda r: abs(r["error"]), reverse=True)],
         },
     }
 
@@ -540,4 +547,220 @@ def sensitivity(profile: dict, feature: str, new_value: float) -> dict:
         "academic_violation": counterintuitive and academic,
         "message": message,
         "sweep": {"values": sweep_x, "predictions": [float(v) for v in sweep_y], "drops": drops},
+    }
+
+
+# ---------------------------------------------------------------- debate experiments
+# All experiments reuse the active model's saved train/test rows, so every number
+# refers to the same held-out students the model was evaluated on.
+
+CONSISTENCY_STEPS = {"GRE Score": 1, "TOEFL Score": 1, "CGPA": 0.05, "SOP": 0.5, "LOR": 0.5,
+                     "University Rating": 1, "Research": 1}
+ATYPICAL_SHARE = 0.20
+
+
+def _held_out_data(bundle: dict) -> dict:
+    """Rebuild the exact training and testing rows of the active model."""
+    meta, ev = bundle["metadata"], bundle["evaluation"]
+    data = load_saved_dataset()
+    features = meta["features"]
+    train_idx = ev["train_index"]
+    # Models saved before test_index was persisted: test rows carry their 1-based dataset row.
+    test_idx = ev.get("test_index") or [int(r["row"]) - 1 for r in ev["test_rows"]]
+    return {
+        "X_train": data.loc[train_idx, features].reset_index(drop=True),
+        "y_train": data.loc[train_idx, TARGET].reset_index(drop=True),
+        "X_test": data.loc[test_idx, features].reset_index(drop=True),
+        "y_test": data.loc[test_idx, TARGET].reset_index(drop=True),
+        "train_ids": [i + 1 for i in train_idx],
+        "test_ids": [i + 1 for i in test_idx],
+    }
+
+
+def subjective_comparison() -> dict:
+    """Model A (all seven features) vs Model B (academic only), same rows, same settings."""
+    bundle = load_model()
+    meta, cfg = bundle["metadata"], bundle["metadata"]["config"]
+    if set(meta["features"]) != set(FEATURES):
+        raise ModelError("This comparison needs an active model trained on all seven features. "
+                         "Retrain on the Train Model page with every feature selected.")
+    d = _held_out_data(bundle)
+    academic = [f for f in FEATURES if f in ACADEMIC_FEATURES]
+    models, preds = {}, {}
+    for name, feats in (("all", list(FEATURES)), ("academic", academic)):
+        # Each model fits its own scaler on the training rows only.
+        pipe = build_pipeline(cfg["k"], cfg["metric"], cfg["weights"]).fit(d["X_train"][feats], d["y_train"])
+        preds[name] = pipe.predict(d["X_test"][feats])
+        models[name] = {"features": feats, **_metrics(d["y_test"], preds[name])}
+    change = preds["academic"] - preds["all"]
+    abs_change = np.abs(change)
+    order = np.argsort(-abs_change, kind="stable")[:5]
+    return {
+        "config": cfg,
+        "n_train": len(d["X_train"]),
+        "n_test": len(d["X_test"]),
+        "models": models,
+        "mean_abs_change": float(abs_change.mean()),
+        "over_5_points": int(np.sum(abs_change > 0.05 + 1e-9)),
+        "max_abs_change": float(abs_change.max()),
+        "matches_active_model": bool(np.allclose(preds["all"], bundle["pipeline"].predict(d["X_test"]))),
+        "largest_changes": [
+            {"student": d["test_ids"][i], "actual": float(d["y_test"][i]), "all_features": float(preds["all"][i]),
+             "academic_only": float(preds["academic"][i]), "change": float(change[i])}
+            for i in order
+        ],
+    }
+
+
+def consistency_test() -> dict:
+    """Improve one feature at a time for every test student; count predictions that drop."""
+    bundle = load_model()
+    pipe, features = bundle["pipeline"], bundle["metadata"]["features"]
+    d = _held_out_data(bundle)
+    X, ids = d["X_test"], d["test_ids"]
+    base = pipe.predict(X)
+    per_feature, events, all_changes = [], [], []
+    for f in features:
+        step, hi = CONSISTENCY_STEPS[f], FEATURE_RANGES[f][1]
+        if f == "Research":
+            improved = pd.Series(1.0, index=X.index)
+            valid = (X[f] == 0).to_numpy()
+        else:
+            improved = (X[f] + step).round(2)
+            valid = (improved <= hi + 1e-9).to_numpy()  # skip students already at the maximum
+        rows = np.flatnonzero(valid)
+        change = np.array([])
+        if len(rows):
+            modified = X.iloc[rows].copy()
+            modified[f] = improved.iloc[rows].to_numpy()
+            new_pred = pipe.predict(modified)
+            change = new_pred - base[rows]
+            for j in np.flatnonzero(change < -1e-9):
+                pos = rows[j]
+                events.append({
+                    "student": ids[pos], "feature": f, "group": feature_group(f),
+                    "original_value": float(X[f].iloc[pos]), "improved_value": float(improved.iloc[pos]),
+                    "original_prediction": float(base[pos]), "modified_prediction": float(new_pred[j]),
+                    "change": float(change[j]),
+                })
+        all_changes.append(change)
+        decreases = change[change < -1e-9]
+        per_feature.append({
+            "feature": f, "group": feature_group(f),
+            "step": "0 → 1" if f == "Research" else f"+{step:g}",
+            "tests": int(len(rows)),
+            "decreases": int(len(decreases)),
+            "largest_decrease": float(-decreases.min()) if len(decreases) else 0.0,
+        })
+    changes = np.concatenate(all_changes) if all_changes else np.array([])
+    academic_events = [e for e in events if e["group"] == "academic"]
+    return {
+        "n_test": len(X),
+        "features": per_feature,
+        "totals": {
+            "tests": int(len(changes)),
+            "decreases": int(np.sum(changes < -1e-9)),
+            "decreases_over_2": int(np.sum(changes < -0.02 - 1e-9)),
+            "decreases_over_5": int(np.sum(changes < -0.05 - 1e-9)),
+            "largest_decrease": float(-changes.min()) if len(changes) and changes.min() < -1e-9 else 0.0,
+            "unique_students": len({e["student"] for e in events}),
+            "academic_decreases": len(academic_events),
+            "academic_unique_students": len({e["student"] for e in academic_events}),
+        },
+        "examples": sorted(events, key=lambda e: e["change"])[:5],
+        "academic_examples": sorted(academic_events, key=lambda e: e["change"])[:5],
+    }
+
+
+def _neighbor_distances(bundle: dict, X: pd.DataFrame):
+    """Distances/indices of the K nearest training students, using the saved scaler and KNN."""
+    scaler, knn = bundle["pipeline"].named_steps["scaler"], bundle["pipeline"].named_steps["knn"]
+    return knn.kneighbors(scaler.transform(X))
+
+
+def atypical_analysis() -> dict:
+    bundle = load_model()
+    d = _held_out_data(bundle)
+    dist, _ = _neighbor_distances(bundle, d["X_test"])
+    avg_dist = dist.mean(axis=1)
+    pred = bundle["pipeline"].predict(d["X_test"])
+    abs_err = np.abs(pred - d["y_test"].to_numpy())
+    n = len(avg_dist)
+    n_atypical = max(1, int(round(ATYPICAL_SHARE * n)))
+    atypical = np.zeros(n, dtype=bool)
+    atypical[np.argsort(-avg_dist, kind="stable")[:n_atypical]] = True
+
+    def group(mask):
+        return {"count": int(mask.sum()), "mean_abs_error": float(abs_err[mask].mean()) if mask.any() else None,
+                "mean_distance": float(avg_dist[mask].mean()) if mask.any() else None}
+
+    typical_stats, atypical_stats = group(~atypical), group(atypical)
+    ratio = (atypical_stats["mean_abs_error"] / typical_stats["mean_abs_error"]
+             if typical_stats["mean_abs_error"] else None)
+    rho = p_value = None
+    if n >= 3 and np.ptp(avg_dist) > 0 and np.ptp(abs_err) > 0:
+        result = spearmanr(avg_dist, abs_err)
+        if np.isfinite(result.statistic):
+            rho, p_value = float(result.statistic), float(result.pvalue)
+    students = sorted(
+        ({"student": d["test_ids"][i], "avg_distance": float(avg_dist[i]), "abs_error": float(abs_err[i]),
+          "actual": float(d["y_test"][i]), "predicted": float(pred[i]),
+          "group": "atypical" if atypical[i] else "typical"} for i in range(n)),
+        key=lambda s: s["avg_distance"], reverse=True)
+    return {
+        "k": bundle["metadata"]["config"]["k"],
+        "metric": bundle["metadata"]["config"]["metric"],
+        "typical": typical_stats,
+        "atypical": atypical_stats,
+        "error_ratio": ratio,
+        "distance_cutoff": float(avg_dist[atypical].min()),
+        "spearman_rho": rho,
+        "spearman_p": p_value,
+        "students": students,
+    }
+
+
+def nearest_neighbors(student_id: int) -> dict:
+    """The K training students the saved model averages for one held-out test student."""
+    bundle = load_model()
+    features = bundle["metadata"]["features"]
+    d = _held_out_data(bundle)
+    if student_id not in d["test_ids"]:
+        raise ModelError(f"Student #{student_id} is not in the held-out test set.", 404)
+    pos = d["test_ids"].index(student_id)
+    x = d["X_test"].iloc[[pos]]
+    dist, idx = _neighbor_distances(bundle, x)
+    neighbors = [
+        {"student": d["train_ids"][i], **{f: float(d["X_train"][f].iloc[i]) for f in features},
+         "distance": float(dd), "chance_of_admit": float(d["y_train"][i])}
+        for dd, i in zip(dist[0], idx[0])
+    ]
+    return {
+        "student": student_id,
+        "features": {f: float(x[f].iloc[0]) for f in features},
+        "actual": float(d["y_test"][pos]),
+        "predicted": float(bundle["pipeline"].predict(x)[0]),
+        "avg_distance": float(dist[0].mean()),
+        "k": bundle["metadata"]["config"]["k"],
+        "weights": bundle["metadata"]["config"]["weights"],
+        "neighbors": neighbors,
+    }
+
+
+def cutoff_comparison(cutoff: float) -> dict:
+    """Count test students whose recorded and predicted scores fall on opposite sides of a cutoff."""
+    if not (0 < cutoff < 1):
+        raise ModelError("The cutoff must be between 0% and 100%.")
+    rows = load_model()["evaluation"]["test_rows"]
+    actual = np.array([r["actual"] for r in rows])
+    predicted = np.array([r["predicted"] for r in rows])
+    actual_above, pred_above = actual >= cutoff, predicted >= cutoff
+    return {
+        "cutoff": cutoff,
+        "n_test": len(rows),
+        "actual_above": int(actual_above.sum()),
+        "predicted_above": int(pred_above.sum()),
+        "recorded_above_predicted_below": int(np.sum(actual_above & ~pred_above)),
+        "recorded_below_predicted_above": int(np.sum(~actual_above & pred_above)),
+        "disagreements": int(np.sum(actual_above != pred_above)),
     }
