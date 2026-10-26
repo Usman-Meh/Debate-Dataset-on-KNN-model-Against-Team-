@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}KNN Admission Predictor{% endblock %} · KNN Admission Predictor</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+</head>
+<body data-page="{{ active }}">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/train">
+        <span class="brand-mark">K</span>
+        <span>KNN Admission Predictor</span>
+      </a>
+      <nav class="nav" aria-label="Main navigation">
+        <a href="/train" class="{{ 'active' if active == 'train' }}">Train Model</a>
+        <a href="/predict" class="{{ 'active' if active == 'predict' }}">Predict Admission</a>
+        <a href="/evaluation" class="{{ 'active' if active == 'evaluation' }}">Model Evaluation</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% if model %}
+    <div class="model-strip">
+      <span class="dot ok"></span>
+      Active model: <strong>K = {{ model.config.k }}</strong>
+      · {{ model.config.metric|capitalize }} · {{ model.config.weights|capitalize }} weights
+      · {{ model.features|length }} features
+      · Test R² <strong>{{ '%.3f'|format(model.metrics.test.r2) }}</strong>
+      · trained {{ model.created_at.replace('T', ' ') }}
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    Chance of Admit is a regression estimate learned from historical data — not an admissions decision.
+  </footer>
+
+  <script src="{{ url_for('static', path='js/chart.umd.min.js') }}"></script>
+  <script>
+    window.APP = {
+      features: {{ features|tojson }},
+      ranges: {{ ranges|tojson }},
+      academic: {{ academic|tojson }},
+      model: {{ model|tojson }}
+    };
+  </script>
+  <script src="{{ url_for('static', path='js/app.js') }}"></script>
+</body>
+</html>

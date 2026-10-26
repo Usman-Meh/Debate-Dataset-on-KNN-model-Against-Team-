@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Train Model{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Train Model</h1>
+  <p class="muted">Upload the admissions dataset, choose KNN settings and train a regression model that estimates <em>Chance of Admit</em>.</p>
+</div>
+
+{% if model_error and 'damaged' in model_error %}
+<div class="alert error">{{ model_error }}</div>
+{% endif %}
+
+<section class="card">
+  <h2>1. Upload dataset</h2>
+  <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload dataset">
+    <input type="file" id="file-input" accept=".csv,.xlsx,.xls" hidden>
+    <div class="dz-icon">⬆</div>
+    <p><strong>Drag &amp; drop</strong> a CSV or Excel file here, or <span class="link">browse</span></p>
+    <p class="muted small">Supported: .csv, .xlsx, .xls · max 5 MB · required columns:
+      {{ features|join(', ') }}, Chance of Admit</p>
+  </div>
+  <div id="upload-error" class="alert error" hidden></div>
+
+  <div id="upload-result" hidden>
+    <div class="stats-row">
+      <div class="stat"><span class="stat-label">File</span><span class="stat-value small" id="up-filename"></span></div>
+      <div class="stat"><span class="stat-label">Rows</span><span class="stat-value" id="up-rows"></span></div>
+      <div class="stat"><span class="stat-label">Columns</span><span class="stat-value" id="up-cols"></span></div>
+      <div class="stat"><span class="stat-label">Valid rows</span><span class="stat-value" id="up-valid"></span></div>
+    </div>
+
+    <div id="sheet-picker" class="field inline" hidden>
+      <label for="sheet-select">Excel sheet</label>
+      <select id="sheet-select"></select>
+    </div>
+
+    <div id="validation-box"></div>
+
+    <h3>Detected columns</h3>
+    <div id="column-chips" class="chips"></div>
+
+    <h3>Missing values</h3>
+    <div class="table-wrap"><table id="missing-table" class="table compact"></table></div>
+
+    <h3>First 10 records</h3>
+    <div class="table-wrap"><table id="preview-table" class="table compact"></table></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>2. KNN training parameters</h2>
+  <form id="train-form" class="param-grid" novalidate>
+    <div class="field">
+      <label for="k">K neighbors</label>
+      <input type="number" id="k" name="k" value="5" min="1" step="1" required>
+      <span class="hint" id="k-hint">Number of similar students averaged for each prediction.</span>
+    </div>
+    <div class="field">
+      <label for="test-percent">Testing percentage: <strong id="test-label">30%</strong></label>
+      <input type="range" id="test-percent" min="10" max="50" step="5" value="30">
+      <span class="hint">Training percentage: <strong id="train-label">70%</strong> (calculated automatically)</span>
+    </div>
+    <div class="field">
+      <label for="metric">Distance metric</label>
+      <select id="metric">
+        <option value="euclidean" selected>Euclidean</option>
+        <option value="manhattan">Manhattan</option>
+        <option value="chebyshev">Chebyshev</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="weights">Weights</label>
+      <select id="weights">
+        <option value="uniform" selected>Uniform</option>
+        <option value="distance">Distance</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Random state</label>
+      <input type="text" value="42" disabled>
+    </div>
+    <div class="field">
+      <label>Feature scaling</label>
+      <input type="text" value="StandardScaler (fitted on training data only)" disabled>
+    </div>
+    <div class="field full">
+      <label>Input features <span class="muted small">(target: Chance of Admit)</span></label>
+      <div class="checks" id="feature-checks">
+        {% for f in features %}
+        <label class="check"><input type="checkbox" value="{{ f }}" checked> {{ f }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="field full actions">
+      <button type="submit" class="btn primary" id="train-btn" disabled>Train Model</button>
+      <span class="muted small" id="train-status">Upload a valid dataset to enable training.</span>
+    </div>
+  </form>
+  <div id="train-error" class="alert error" hidden></div>
+</section>
+
+<section class="card" id="results-card" hidden>
+  <h2>3. Training results</h2>
+  <div class="metric-grid">
+    <div class="metric"><span>Training R²</span><strong id="m-train-r2"></strong></div>
+    <div class="metric"><span>Testing R²</span><strong id="m-test-r2"></strong></div>
+    <div class="metric"><span>Training MAE</span><strong id="m-train-mae"></strong></div>
+    <div class="metric"><span>Testing MAE</span><strong id="m-test-mae"></strong></div>
+    <div class="metric"><span>Training RMSE</span><strong id="m-train-rmse"></strong></div>
+    <div class="metric"><span>Testing RMSE</span><strong id="m-test-rmse"></strong></div>
+  </div>
+  <div class="stats-row">
+    <div class="stat"><span class="stat-label">Training samples</span><span class="stat-value" id="r-ntrain"></span></div>
+    <div class="stat"><span class="stat-label">Testing samples</span><span class="stat-value" id="r-ntest"></span></div>
+    <div class="stat"><span class="stat-label">K value</span><span class="stat-value" id="r-k"></span></div>
+    <div class="stat"><span class="stat-label">Created</span><span class="stat-value small" id="r-created"></span></div>
+  </div>
+  <p class="muted small" id="r-dropped"></p>
+
+  <div class="two-col">
+    <div>
+      <h3>Actual vs Predicted (test set)</h3>
+      <div class="chart-box"><canvas id="train-scatter"></canvas></div>
+    </div>
+    <div class="explain">
+      <h3>What do these numbers mean?</h3>
+      <p><strong>R² (coefficient of determination)</strong> — how much of the variation in admission chances the model explains. 1.0 is perfect; 0 means no better than always guessing the average.</p>
+      <p><strong>MAE (mean absolute error)</strong> — the average size of a prediction mistake. An MAE of 0.05 means predictions are off by about 5 percentage points on average.</p>
+      <p><strong>RMSE (root mean squared error)</strong> — like MAE, but large mistakes count more. If RMSE is much bigger than MAE, a few predictions are badly wrong.</p>
+      <p>Compare <em>training</em> with <em>testing</em>: testing scores come from students the model never saw, so they show how it will behave on new applicants.</p>
+    </div>
+  </div>
+  <div class="actions">
+    <a href="/predict" class="btn primary">Use This Model for Prediction</a>
+    <a href="/evaluation" class="btn">View Evaluation</a>
+  </div>
+</section>
+{% endblock %}

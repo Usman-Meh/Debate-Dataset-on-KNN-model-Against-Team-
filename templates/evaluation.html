@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Model Evaluation{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Model Evaluation</h1>
+  <p class="muted">Does the trained KNN model generalize, which features drive it, and does it behave consistently?</p>
+</div>
+
+{% if not model %}
+<section class="card notice">
+  <h2>No trained model yet</h2>
+  <p>{{ model_error }}</p>
+  <a href="/train" class="btn primary">Go to Train Model</a>
+</section>
+{% else %}
+<div id="eval-error" class="alert error" hidden></div>
+
+<section class="card">
+  <h2>A. Performance comparison</h2>
+  <div class="table-wrap">
+    <table class="table" id="perf-table">
+      <thead><tr><th>Metric</th><th class="num">Training</th><th class="num">Testing</th><th class="num">Generalization gap</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p class="muted small">Gap = how much worse the model does on unseen test students (Training R² − Testing R²; Testing error − Training error).</p>
+  <div class="two-col">
+    <div><h3>Training vs Testing R²</h3><div class="chart-box short"><canvas id="r2-chart"></canvas></div></div>
+    <div><h3>Training vs Testing MAE</h3><div class="chart-box short"><canvas id="mae-chart"></canvas></div></div>
+  </div>
+  <div class="explain" id="perf-notes"></div>
+</section>
+
+<section class="card">
+  <h2>B. Feature importance</h2>
+  <div class="two-col wide-left">
+    <div><div class="chart-box"><canvas id="importance-chart"></canvas></div></div>
+    <div class="explain">
+      <p><strong>Permutation importance</strong> shuffles one feature at a time in the held-out test set and measures how much the test MAE gets worse. A bigger increase means the model depends on that feature more.</p>
+      <p><span class="swatch academic"></span><strong>Academic features</strong>: GRE, TOEFL, CGPA, Research.<br>
+         <span class="swatch reviewer"></span><strong>Reviewer-influenced features</strong>: SOP, LOR, University Rating.</p>
+      <p id="importance-summary"></p>
+      <p class="note">Importance measures <em>predictive dependence</em> only. A feature can be highly predictive and still encode past reviewer bias — high importance is not evidence of fairness.</p>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>C. K value comparison</h2>
+  <div class="two-col wide-left">
+    <div><div class="chart-box"><canvas id="k-chart"></canvas></div></div>
+    <div class="explain">
+      <p>Each K was scored with <strong id="k-folds"></strong>-fold cross-validation on the <strong>training data only</strong>. The test set is never used to choose K.</p>
+      <div class="stats-row">
+        <div class="stat"><span class="stat-label">Current K</span><span class="stat-value" id="k-current"></span></div>
+        <div class="stat"><span class="stat-label">Recommended K</span><span class="stat-value ok-text" id="k-best"></span></div>
+      </div>
+      <p id="k-summary"></p>
+      <button class="btn primary" id="retrain-btn" hidden></button>
+      <p class="muted small" id="retrain-status"></p>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>D. Prediction consistency</h2>
+  <p class="muted">Change one feature while keeping everything else fixed. A consistent model should not lower a student's chance when an academic qualification improves.</p>
+  <form id="sens-form" class="form-grid" novalidate>
+    {% for f in features %}
+    <div class="field">
+      <label for="sens-{{ loop.index }}">{{ f }}</label>
+      {% if f == 'Research' %}
+      <select id="sens-{{ loop.index }}" data-feature="{{ f }}"><option value="1">Yes</option><option value="0">No</option></select>
+      {% elif f == 'University Rating' %}
+      <select id="sens-{{ loop.index }}" data-feature="{{ f }}">{% for i in range(1, 6) %}<option value="{{ i }}">{{ i }}</option>{% endfor %}</select>
+      {% else %}
+      <input type="number" id="sens-{{ loop.index }}" data-feature="{{ f }}" min="{{ ranges[f][0] }}" max="{{ ranges[f][1] }}"
+             step="{{ '0.01' if f == 'CGPA' else ('0.5' if f in ['SOP', 'LOR'] else '1') }}">
+      {% endif %}
+    </div>
+    {% endfor %}
+    <div class="field">
+      <label for="sens-feature">Feature to change</label>
+      <select id="sens-feature">
+        {% for f in model.features %}<option value="{{ f }}" {{ 'selected' if f == 'CGPA' }}>{{ f }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="sens-new">New value</label>
+      <input type="number" id="sens-new" step="any">
+    </div>
+    <div class="field actions full">
+      <button type="submit" class="btn primary">Run experiment</button>
+      <span class="muted small">Profile starts at the training-set median student.</span>
+    </div>
+  </form>
+  <div id="sens-error" class="alert error" hidden></div>
+  <div id="sens-result" hidden>
+    <div class="two-col">
+      <div>
+        <table class="table" id="sens-table">
+          <thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="sens-message" class="alert"></div>
+      </div>
+      <div>
+        <h3 id="sweep-title">Prediction across values</h3>
+        <div class="chart-box short"><canvas id="sweep-chart"></canvas></div>
+        <p class="muted small" id="sweep-note"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>E. Prediction errors</h2>
+  <div class="stats-row">
+    <div class="stat"><span class="stat-label">Average absolute error</span><span class="stat-value" id="err-mae"></span></div>
+    <div class="stat"><span class="stat-label">Median absolute error</span><span class="stat-value" id="err-median"></span></div>
+    <div class="stat"><span class="stat-label">Average bias</span><span class="stat-value" id="err-bias"></span></div>
+    <div class="stat"><span class="stat-label">Largest error</span><span class="stat-value" id="err-max"></span></div>
+  </div>
+  <div class="two-col">
+    <div>
+      <h3>Actual vs Predicted (held-out test set)</h3>
+      <div class="chart-box"><canvas id="eval-scatter"></canvas></div>
+      <p class="muted small">Points on the dashed line are perfect predictions. Bias &gt; 0 means the model over-estimates on average.</p>
+    </div>
+    <div>
+      <h3>Top 10 largest errors</h3>
+      <div class="table-wrap"><table class="table compact" id="errors-table"></table></div>
+    </div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Predict Admission{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Predict Admission</h1>
+  <p class="muted">Estimate a student's Chance of Admit with the saved KNN model. The model is reused as-is — nothing is retrained here.</p>
+</div>
+
+{% if not model %}
+<section class="card notice">
+  <h2>No trained model yet</h2>
+  <p>{{ model_error }}</p>
+  <a href="/train" class="btn primary">Go to Train Model</a>
+</section>
+{% else %}
+
+<div class="two-col">
+  <section class="card">
+    <h2>Single student</h2>
+    <form id="predict-form" class="form-grid" novalidate>
+      <div class="field">
+        <label for="gre_score">GRE Score</label>
+        <input type="number" id="gre_score" min="260" max="340" step="1" placeholder="260 – 340" required>
+      </div>
+      <div class="field">
+        <label for="toefl_score">TOEFL Score</label>
+        <input type="number" id="toefl_score" min="0" max="120" step="1" placeholder="0 – 120" required>
+      </div>
+      <div class="field">
+        <label for="university_rating">University Rating</label>
+        <select id="university_rating" required>
+          <option value="" disabled selected>Select 1 – 5</option>
+          {% for i in range(1, 6) %}<option value="{{ i }}">{{ i }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="sop">SOP (Statement of Purpose)</label>
+        <input type="number" id="sop" min="1" max="5" step="0.5" placeholder="1 – 5" required>
+      </div>
+      <div class="field">
+        <label for="lor">LOR (Letter of Recommendation)</label>
+        <input type="number" id="lor" min="1" max="5" step="0.5" placeholder="1 – 5" required>
+      </div>
+      <div class="field">
+        <label for="cgpa">CGPA</label>
+        <input type="number" id="cgpa" min="0" max="10" step="0.01" placeholder="0 – 10" required>
+      </div>
+      <div class="field">
+        <label for="research">Research experience</label>
+        <select id="research" required>
+          <option value="" disabled selected>Select</option>
+          <option value="1">Yes</option>
+          <option value="0">No</option>
+        </select>
+      </div>
+      <div class="field actions full">
+        <button type="submit" class="btn primary">Predict Admission</button>
+        <button type="button" class="btn" id="fill-example">Fill typical profile</button>
+      </div>
+    </form>
+    {% if model.features|length < features|length %}
+    <p class="muted small">This model uses only: {{ model.features|join(', ') }}. Other fields are validated but ignored.</p>
+    {% endif %}
+  </section>
+
+  <section class="card result-card">
+    <h2>Predicted Chance of Admit</h2>
+    <div id="predict-error" class="alert error" hidden></div>
+    <div id="predict-empty" class="muted">Fill in the form and click <strong>Predict Admission</strong>.</div>
+    <div id="predict-result" hidden>
+      <div class="big-number" id="predict-value">–</div>
+      <div class="bar"><div class="bar-fill" id="predict-bar"></div></div>
+      <p class="muted small" id="predict-context"></p>
+    </div>
+    <div class="note">
+      This is a regression estimate based on similar past applicants, not an admitted / rejected decision.
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Bulk predictions</h2>
+  <p class="muted">Upload a CSV or Excel file with the columns: <strong>{{ model.features|join(', ') }}</strong>. Other columns are kept in the output.</p>
+  <div class="dropzone" id="batch-dropzone" tabindex="0" role="button" aria-label="Upload file for bulk prediction">
+    <input type="file" id="batch-input" accept=".csv,.xlsx,.xls" hidden>
+    <div class="dz-icon">⬆</div>
+    <p><strong>Drag &amp; drop</strong> a file here, or <span class="link">browse</span></p>
+    <p class="muted small">.csv, .xlsx, .xls · max 5 MB</p>
+  </div>
+  <div id="batch-error" class="alert error" hidden></div>
+
+  <div id="batch-result" hidden>
+    <div id="batch-sheet-picker" class="field inline" hidden>
+      <label for="batch-sheet-select">Excel sheet</label>
+      <select id="batch-sheet-select"></select>
+    </div>
+    <div class="stats-row">
+      <div class="stat"><span class="stat-label">File</span><span class="stat-value small" id="b-filename"></span></div>
+      <div class="stat"><span class="stat-label">Uploaded records</span><span class="stat-value" id="b-total"></span></div>
+      <div class="stat"><span class="stat-label">Successful predictions</span><span class="stat-value ok-text" id="b-success"></span></div>
+      <div class="stat"><span class="stat-label">Invalid rows</span><span class="stat-value" id="b-invalid"></span></div>
+    </div>
+    <div class="actions">
+      <a class="btn primary" id="download-csv" href="#">Download CSV</a>
+      <a class="btn" id="download-xlsx" href="#">Download XLSX</a>
+    </div>
+    <div id="invalid-box" hidden>
+      <h3>Invalid rows</h3>
+      <div class="table-wrap short"><table id="invalid-table" class="table compact"></table></div>
+    </div>
+    <h3>Results <span class="muted small" id="b-truncated"></span></h3>
+    <div class="table-wrap tall"><table id="batch-table" class="table compact"></table></div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
